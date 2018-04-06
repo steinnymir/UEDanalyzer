@@ -71,6 +71,14 @@ def find_maxima(array,radius,number):
         x_max, y_max = utils.max2D(temp_array)
         maxima.append((x_max, y_max))
         peaks[i,...] =temp_array[x_max - radius:x_max + radius, y_max - radius:y_max + radius]
+
+        unique, counts = np.unique(peaks[i,...], return_counts=True)
+        unique_counts_dict = dict(zip(unique, counts))
+        try:
+            if unique_counts_dict['0'] > 10:
+                print('bad maxima')
+        except:
+            pass
         temp_array[x_max - radius:x_max + radius, y_max - radius:y_max + radius] = 0
         plt.scatter(y_max, x_max, s=radius, c='red')
     plt.show()
