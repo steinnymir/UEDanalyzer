@@ -8,95 +8,131 @@ import sys, os
 import scipy.io as spio
 import matplotlib.pyplot as plt
 import numpy as np
+import pickle
+import h5py
 
 
 def main():
-    BASE_PATH= 'D:/data/UED/mat/'
-    SCAN_NAME = '2013_07_01_Bi_800nm_1_6mW_17kHz_100µm_t0_finerSteps'
-
-    output = import_mat_folder(BASE_PATH,SCAN_NAME)
-    for key, val in output.items():
-        if key =='data':
-            print(output['data'].keys())
-            try:
-                print(output['data']['delay_1315'])
-            except:
-                pass
-        elif key == 'dark_img':
-            pass
-        else:
-            print(key,val)
-
-    plt.imshow(output['data']['delay_1315']['001']['data'])
-
-    plt.show()
+    if True:
+        BASE_PATH = 'D:/data/UED/mat/'
+        SCAN_NAME = '2013_07_01_Bi_800nm_1_6mW_17kHz_100µm_t0_finerSteps'
+        H5_NAME = 'D:/data/UED/hdf5/{}.h5'.format(SCAN_NAME)
+        df = make_h5(BASE_PATH, SCAN_NAME, H5_NAME, return_h5=True)
+        for name in df:
+            print(name)
 
 
-def import_mat_folder(BASE_PATH,SCAN_NAME):
-
+def make_h5(BASE_PATH, SCAN_NAME, h5_file, return_h5=True):
     # extract scan info from filenames
 
     list_of_files = os.listdir(BASE_PATH + SCAN_NAME)
     print('reading {} files'.format(len(list_of_files)))
-    output = {
-        'date': None,
-        'stage_zero_position': None,
-        'step_size': None,
-        'total_averages': 0,
-        'data': {}
-    }
 
     other_files = []
-    m_data_dict = {}
-    dark_imgs = []
-
+    bright_dict = {}
+    dark_dict = {}
+    bright_data = None
+    dark_data = None
+    delays = []
 
     for f in list_of_files:
         try:
             d = spio.loadmat(BASE_PATH + SCAN_NAME + '/' + f)
             if 'dark-' in f:
-                dark_imgs.append(d['Image'])
+                dark_dict[f] = np.float32(d['Image'])
             else:
-                m_data_dict[f] = d['Image']
+                bright_dict[f] = np.float32(d['Image'])
         except:
             other_files.append(f)
 
-# make a dark image average:
-    dark_imgs = np.array(dark_imgs,dtype='float64')
-    output['dark_img'] = dark_imgs.sum(axis=0) / np.shape(dark_imgs)[0]
-    print('created dark image with shape {}'.format(np.shape(output['dark_img'])))
-
-    print('loading {} mat files'.format(len(list_of_files)-len(other_files)))
-    for key,img in m_data_dict.items():
-
-        base, index = key.split('-')
+    # read metadata from file names
+    names = list(bright_dict.keys())
+    metadata = {
+        'max_average': 0,
+        'delays': [],
+        'time_zero': None,
+        'date': None,
+        'name_base': None,
+    }
+    stage_positions = []
+    for i, name in enumerate(names):
+        base, index = name.split('-')
+        if metadata['name_base'] is None:
+            metadata['name_base'] = base
 
         base_list = base.split('_')
-        date = [ base_list.pop(0) for n in range(2)]
+        date = [base_list.pop(0) for n in range(3)]
         date = '_'.join(date)
-        if output['date'] is None:
-            output['date'] = date
-        # from INDEX:
+        if metadata['date'] is None:
+            metadata['date'] = date
 
-        zero_pos, current_pos, delay_num, avg_num = index.split('.')[0].split('_') #remove extension and split by _
+        zero_pos, current_pos, delay_num, avg_num = index.split('.')[0].split('_')  # remove extension and split by _
+        if metadata['time_zero'] is None:
+            metadata['time_zero'] = int(zero_pos)
+        else:
+            if metadata['time_zero'] != int(zero_pos):
+                raise ValueError('A file has the wrong zero position value.')
+        stage_positions.append(int(current_pos) - metadata['time_zero'])
+        delays.append(int(delay_num))
+        metadata['max_average'] = max(metadata['max_average'], int(avg_num))
 
-        output['total_averages'] = max(int(avg_num), output['total_averages'])
+    metadata['delays'] = list(set(delays))
+    metadata['time_delays'] = sorted(list(set(stage_positions)))
 
-         # create an entry in the dict for each bright scan
-        pos_key = 'delay_{}'.format(current_pos)
-        avg_key = 'avg_{}'.format(avg_num)
-        try:
-            output['data'][pos_key][avg_key]: {'img':img,'stage position':int(current_pos)}
-        except:
-            output['data'][pos_key] = {avg_key: {'img':img,'stage position':int(current_pos)}}
+    print('loading {} mat files'.format(len(list_of_files) - len(other_files)))
 
+    # initialize bright and dark image arrays as (avg_n
+    (x, y) = np.shape(bright_dict[list(bright_dict.keys())[0]])
+    bright_data = np.ndarray((metadata['max_average'], x, y, len(metadata['time_delays'])), dtype='float32')
+    dark_data = np.ndarray((metadata['max_average'], x, y, len(metadata['time_delays'])), dtype='float32')
 
-    # output['step_size'] = output['stage_positions'][1]-output['stage_positions'][0],
-    # todo: implement stage position stuff
+    for key, img in bright_dict.items():
+        base, index = key.split('-')
+        zero_pos, current_pos, delay_num, avg_num = index.split('.')[0].split('_')  # remove extension and split by _
+        bright_data[int(avg_num) - 1, ..., int(delay_num) - 1] = img
+    for key, img in dark_dict.items():
+        base, index = key.split('-')
+        zero_pos, current_pos, delay_num, avg_num = index.split('.')[0].split('_')  # remove extension and split by _
+        dark_data[int(avg_num) - 1, ..., int(delay_num) - 1] = img
 
-    return output
+    # create hdf5 file
 
+    hfile = h5py.File(h5_file, 'w')
+    print('creating hdf5 dataframe in {}'.format(h5_file))
+    hfile.create_dataset('data/bright', data=bright_data)
+    hfile.create_dataset('data/dark', data=dark_data)
+    hfile.create_group('metadata')
+    for key, val in metadata.items():
+            hfile.create_dataset('metadata/{}'.format(key), data=val)
+    if return_h5:
+        return hfile
+    else:
+        hfile.close()
 
+def cart2pol_array(cartesian, xc=None, yc=None):
+
+    lenX = len(cartesian[:, 0])
+    lenY = len(cartesian[0, :])
+
+    if xc == None:
+        xc = int(lenX / 2)
+    if yc is None:
+        yc = int(lenY / 2)
+
+    polar = np.zeros((lenX, lenY))
+    for xi in range(lenX):
+        for yi in range(lenY):
+            x = xi - xc
+            y = yi - yc
+
+            rho = int(np.sqrt(x ** 2 + y ** 2))
+            phi = int((np.arctan2(y, x) + np.pi) * np.pi)
+            #            print('rho:{} phi:{}'.format(rho,phi))
+            polar[rho, phi] += cartesian[xi, yi]
+    return polar
+
+def max2D(array):
+    return np.unravel_index(array.argmax(), array.shape)
 
 if __name__ == '__main__':
     main()
